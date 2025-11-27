@@ -166,10 +166,36 @@ export default function Dashboard() {
     }
   };
 
-  const handleDeleteEvent = (e, id) => {
+  const handleDeleteEvent = async (e, id) => {
     e.stopPropagation(); // Prevent triggering the card click
-    console.log(`Deleting event ID: ${id}`);
-    // Future: Add API call to delete event
+
+    if (!window.confirm('Are you sure you want to delete this report?')) return;
+
+    try {
+      const token = localStorage.getItem('token');
+      console.log(`Attempting to delete event ${id} with token:`, token ? 'Present' : 'Missing');
+
+      const response = await fetch(`${SOCKET_URL}/api/alerts/${id}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      if (response.ok) {
+        // Optimistic UI update
+        setEvents(prev => prev.filter(event => event.id !== id));
+        console.log(`Deleted event ID: ${id}`);
+      } else {
+        const errorText = await response.text();
+        console.error('Failed to delete event:', response.status, errorText);
+        alert(`Failed to delete event. Server responded with: ${response.status} ${errorText}`);
+      }
+    } catch (error) {
+      console.error('Error deleting event:', error);
+      alert('Error deleting event. Please check your connection.');
+    }
   };
 
   const filteredEvents = filter === "all" ? events : events.filter(e => e.severity === filter);
@@ -211,8 +237,8 @@ export default function Dashboard() {
                 key={f}
                 onClick={() => setFilter(f)}
                 className={`px-3 py-1.5 text-sm font-bold uppercase border-2 border-neoBlack transition-all shadow-neo-sm active:translate-x-[2px] active:translate-y-[2px] active:shadow-none ${filter === f
-                    ? 'bg-neoBlack text-white'
-                    : 'bg-white text-neoBlack hover:bg-gray-100'
+                  ? 'bg-neoBlack text-white'
+                  : 'bg-white text-neoBlack hover:bg-gray-100'
                   }`}
               >
                 {f}
@@ -228,15 +254,15 @@ export default function Dashboard() {
               key={ev.id}
               onClick={() => handleEventClick(ev.lat, ev.lon)}
               className={`p-4 border-2 border-neoBlack shadow-neo hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-none transition-all cursor-pointer bg-white dark:bg-neoDark group relative ${ev.severity === 'High' ? 'border-l-8 border-l-gRed' :
-                  ev.severity === 'Medium' ? 'border-l-8 border-l-gYellow' :
-                    'border-l-8 border-l-gBlue'
+                ev.severity === 'Medium' ? 'border-l-8 border-l-gYellow' :
+                  'border-l-8 border-l-gBlue'
                 }`}
             >
               <div className="flex justify-between items-start mb-2">
                 <div className="flex items-center space-x-2">
                   <span className={`font-black text-lg tracking-tight ${ev.severity === 'High' ? 'text-gRed' :
-                      ev.severity === 'Medium' ? 'text-gYellow' :
-                        'text-gBlue'
+                    ev.severity === 'Medium' ? 'text-gYellow' :
+                      'text-gBlue'
                     }`}>{ev.type}</span>
                 </div>
                 <div className="flex items-center space-x-2">

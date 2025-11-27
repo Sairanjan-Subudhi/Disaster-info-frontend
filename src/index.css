@@ -36,3 +36,19 @@
 .neo-btn {
   @apply px-6 py-3 font-bold border-2 border-neoBlack shadow-neo active:shadow-none active:translate-x-[4px] active:translate-y-[4px] transition-all;
 }
+
+@keyframes marquee {
+  0% {
+    transform: translateX(0);
+  }
+
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+.animate-marquee {
+  display: inline-block;
+  white-space: nowrap;
+  animation: marquee 20s linear infinite;
+}

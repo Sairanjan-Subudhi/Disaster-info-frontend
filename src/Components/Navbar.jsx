@@ -4,6 +4,7 @@ import { NavLink, Link, useNavigate } from "react-router-dom";
 export default function Navbar() {
   const navigate = useNavigate();
   const [isAuthenticated, setIsAuthenticated] = useState(!!localStorage.getItem("token"));
+  const [userRole, setUserRole] = useState('user');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [isDark, setIsDark] = useState(false);
 
@@ -17,13 +18,34 @@ export default function Navbar() {
       document.documentElement.classList.remove('dark');
     }
 
+    function checkAuth() {
+      const token = localStorage.getItem("token");
+      setIsAuthenticated(!!token);
+
+      const userStr = localStorage.getItem("user");
+      if (userStr) {
+        try {
+          const user = JSON.parse(userStr);
+          setUserRole(user.role || 'user');
+        } catch (e) {
+          console.error("Error parsing user from localStorage", e);
+          setUserRole('user');
+        }
+      } else {
+        setUserRole('user');
+      }
+    }
+
+    // Initial check
+    checkAuth();
+
     function onAuthChanged() {
-      setIsAuthenticated(!!localStorage.getItem("token"));
+      checkAuth();
     }
 
     function onStorage(e) {
-      if (e.key === "token") {
-        setIsAuthenticated(!!localStorage.getItem("token"));
+      if (e.key === "token" || e.key === "user") {
+        checkAuth();
       }
     }
 
@@ -91,6 +113,21 @@ export default function Navbar() {
             <NavLink to="/contact" className={navLinkClasses}>
               Contact
             </NavLink>
+
+            {/* Admin Link */}
+            {isAuthenticated && userRole === 'admin' && (
+              <NavLink
+                to="/admin/users"
+                className={({ isActive }) =>
+                  `text-lg font-black px-3 py-1 border-2 border-neoBlack shadow-neo-sm transition-all ${isActive
+                    ? "bg-gRed text-white transform -rotate-1"
+                    : "bg-white text-gRed hover:bg-gRed hover:text-white hover:-translate-y-1"
+                  }`
+                }
+              >
+                Manage Users
+              </NavLink>
+            )}
           </div>
 
           {/* Right Side Actions */}
@@ -191,6 +228,22 @@ export default function Navbar() {
                 {item}
               </NavLink>
             ))}
+
+            {/* Mobile Admin Link */}
+            {isAuthenticated && userRole === 'admin' && (
+              <NavLink
+                to="/admin/users"
+                onClick={() => setMobileMenuOpen(false)}
+                className={({ isActive }) =>
+                  `block px-4 py-3 text-lg font-black border-2 border-neoBlack dark:border-neoWhite shadow-neo-sm dark:shadow-neo-dark transition-all ${isActive
+                    ? "bg-gRed text-white transform -rotate-1"
+                    : "bg-white dark:bg-neoBlack text-gRed hover:bg-gRed hover:text-white"
+                  }`
+                }
+              >
+                Manage Users
+              </NavLink>
+            )}
 
             <div className="pt-4 mt-4 border-t-2 border-neoBlack dark:border-neoWhite space-y-3">
               {!isAuthenticated ? (

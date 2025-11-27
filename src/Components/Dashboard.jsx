@@ -2,15 +2,26 @@ import React, { useEffect, useState, useRef } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import io from "socket.io-client";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
+import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from 'react-leaflet';
+import MarkerClusterGroup from 'react-leaflet-cluster';
 
 const SOCKET_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:4000";
 
 export default function Dashboard() {
   const [events, setEvents] = useState([]);
   const [filter, setFilter] = useState("all");
-  const mapRef = useRef(null);
   const [isDark, setIsDark] = useState(document.documentElement.classList.contains('dark'));
   const [userRole, setUserRole] = useState('user');
+  const [isMuted, setIsMuted] = useState(false);
+  const isMutedRef = useRef(isMuted);
+  const [mapCenter, setMapCenter] = useState(null);
+
+  // Keep ref in sync with state for socket listener
+  useEffect(() => {
+    isMutedRef.current = isMuted;
+  }, [isMuted]);
 
   // Listen for theme changes to update map tiles
   useEffect(() => {
@@ -48,6 +59,26 @@ export default function Dashboard() {
     lon: (ev.location && ev.location.coordinates) ? ev.location.coordinates[0] : null
   });
 
+  // Custom Cluster Icon
+  const createClusterCustomIcon = function (cluster) {
+    return L.divIcon({
+      html: `<span class="flex items-center justify-center w-full h-full text-white font-black text-lg">${cluster.getChildCount()}</span>`,
+      className: 'bg-neoBlack border-2 border-white rounded-full shadow-neo',
+      iconSize: L.point(40, 40, true),
+    });
+  };
+
+  // Component to handle map animations
+  function MapController({ center }) {
+    const map = useMap();
+    useEffect(() => {
+      if (center) {
+        map.flyTo(center, 10, { duration: 2.5 });
+      }
+    }, [center, map]);
+    return null;
+  }
+
   useEffect(() => {
     const fetchAlerts = async () => {
       try {
@@ -73,96 +104,26 @@ export default function Dashboard() {
       const transformedEvent = transformEvent(evt);
       setEvents((prev) => [transformedEvent, ...prev]);
 
-      if (transformedEvent.lat && transformedEvent.lon && mapRef.current) {
-        mapRef.current.flyTo([transformedEvent.lat, transformedEvent.lon], 10, { duration: 2.5 });
+      if (transformedEvent.lat && transformedEvent.lon) {
+        setMapCenter([transformedEvent.lat, transformedEvent.lon]);
+      }
+
+      // Audio Alert for High Severity
+      if (transformedEvent.severity === 'High' && !isMutedRef.current) {
+        const text = `Alert. High severity ${transformedEvent.type} detected in ${transformedEvent.place}.`;
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.rate = 1.0;
+        utterance.pitch = 1.0;
+        window.speechSynthesis.speak(utterance);
       }
     });
 
     return () => socket.disconnect();
   }, []);
 
-  // Map Initialization & Tile Layer Update
-  useEffect(() => {
-    if (!events.length) return;
-    const mapContainer = document.getElementById("dashboard-map");
-    if (!mapContainer) return;
-
-    if (!mapRef.current) {
-      const map = L.map("dashboard-map", {
-        preferCanvas: true,
-        attributionControl: false,
-        zoomControl: false
-      }).setView([20.6, 78.9], 5);
-
-      L.control.zoom({ position: 'topright' }).addTo(map);
-      mapRef.current = map;
-      window._disasterMap = map;
-    }
-
-    const map = mapRef.current;
-
-    // Remove existing tile layers
-    map.eachLayer((layer) => {
-      if (layer instanceof L.TileLayer) {
-        map.removeLayer(layer);
-      }
-    });
-
-    // Add new tile layer based on theme
-    const tileUrl = isDark
-      ? "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-      : "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png";
-
-    L.tileLayer(tileUrl, {
-      attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
-      subdomains: 'abcd',
-      maxZoom: 19
-    }).addTo(map);
-
-  }, [events.length === 0, isDark]); // Re-run when theme changes
-
-  // Markers Update
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
-
-    if (window._dashMarkers) window._dashMarkers.forEach(m => m.remove());
-    window._dashMarkers = [];
-
-    const filteredEvents = filter === "all" ? events : events.filter(e => e.severity === filter);
-
-    filteredEvents.forEach(e => {
-      if (e.lat !== null && e.lon !== null) {
-        const colors = {
-          High: "#EA4335",   // gRed
-          Medium: "#FBBC05", // gYellow
-          Low: "#4285F4"     // gBlue
-        };
-
-        const marker = L.circleMarker([e.lat, e.lon], {
-          radius: e.severity === "High" ? 12 : e.severity === "Medium" ? 10 : 8,
-          fillColor: colors[e.severity] || "#999",
-          color: "#000",
-          weight: 2,
-          fillOpacity: 1
-        }).addTo(map);
-
-        marker.bindPopup(`
-          <div style="font-family: 'Space Grotesk', sans-serif; padding: 4px;">
-            <b style="color: ${colors[e.severity]}; font-size: 16px; text-transform: uppercase;">${e.type}</b><br/>
-            <div style="margin-top: 4px; font-size: 14px; color: #000; font-weight: 500;">${e.place}</div>
-            <div style="margin-top: 2px; font-size: 12px; color: #666;">Severity: ${e.severity}</div>
-          </div>
-        `);
-
-        window._dashMarkers.push(marker);
-      }
-    });
-  }, [events, filter]);
-
   const handleEventClick = (lat, lon) => {
-    if (lat && lon && mapRef.current) {
-      mapRef.current.flyTo([lat, lon], 10, { duration: 2.5 });
+    if (lat && lon) {
+      setMapCenter([lat, lon]);
     }
   };
 
@@ -198,6 +159,43 @@ export default function Dashboard() {
     }
   };
 
+  const handleDownloadReport = () => {
+    const doc = new jsPDF();
+
+    // Title
+    doc.setFontSize(20);
+    doc.text("DisasterWatch Situation Report", 14, 22);
+
+    // Timestamp
+    doc.setFontSize(10);
+    doc.text(`Generated on: ${new Date().toLocaleString()}`, 14, 30);
+
+    // Table
+    const tableColumn = ["Type", "Location", "Severity", "Time"];
+    const tableRows = [];
+
+    events.forEach(event => {
+      const eventData = [
+        event.type,
+        event.place,
+        event.severity,
+        new Date(event.time).toLocaleString()
+      ];
+      tableRows.push(eventData);
+    });
+
+    autoTable(doc, {
+      head: [tableColumn],
+      body: tableRows,
+      startY: 40,
+      theme: 'grid',
+      styles: { fontSize: 8 },
+      headStyles: { fillColor: [66, 133, 244] } // Google Blue
+    });
+
+    doc.save(`Situation_Report_${new Date().toISOString().split('T')[0]}.pdf`);
+  };
+
   const filteredEvents = filter === "all" ? events : events.filter(e => e.severity === filter);
 
   const stats = {
@@ -206,13 +204,6 @@ export default function Dashboard() {
     medium: events.filter(e => e.severity === "Medium").length,
     low: events.filter(e => e.severity === "Low").length
   };
-
-  if (!events.length) return (
-    <div className="min-h-screen bg-neoWhite dark:bg-neoDark flex flex-col items-center justify-center">
-      <div className="w-16 h-16 border-4 border-neoBlack border-t-gBlue rounded-full animate-spin mb-6"></div>
-      <p className="text-neoBlack dark:text-neoWhite font-bold text-xl animate-pulse">INITIALIZING SYSTEM...</p>
-    </div>
-  );
 
   return (
     <div className="min-h-[calc(100vh-80px)] bg-neoWhite dark:bg-neoDark flex flex-col md:flex-row overflow-hidden relative">
@@ -229,6 +220,19 @@ export default function Dashboard() {
               {filteredEvents.length} EVENTS
             </span>
           </div>
+
+          {/* Admin Download Report Button */}
+          {userRole === 'admin' && (
+            <button
+              onClick={handleDownloadReport}
+              className="w-full mb-4 py-2 px-4 bg-gBlue text-white font-bold border-2 border-neoBlack shadow-neo-sm hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-none transition-all flex items-center justify-center gap-2"
+            >
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+              DOWNLOAD REPORT
+            </button>
+          )}
 
           {/* Filters */}
           <div className="flex flex-wrap gap-2">
@@ -299,11 +303,82 @@ export default function Dashboard() {
       {/* Main Map Area */}
       <main className="flex-1 relative h-[50vh] md:h-auto p-4 bg-neoWhite dark:bg-neoDark">
         <div className="w-full h-full border-4 border-neoBlack dark:border-neoWhite shadow-neo relative overflow-hidden bg-gray-200">
-          <div id="dashboard-map" className="w-full h-full z-0"></div>
+          <MapContainer
+            center={[20.6, 78.9]}
+            zoom={5}
+            className="w-full h-full z-0"
+            zoomControl={false}
+          >
+            <TileLayer
+              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
+              url={isDark
+                ? "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+                : "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+              }
+            />
+            <MapController center={mapCenter} />
+
+            <MarkerClusterGroup
+              chunkedLoading
+              iconCreateFunction={createClusterCustomIcon}
+            >
+              {filteredEvents.map(ev => {
+                if (ev.lat !== null && ev.lon !== null) {
+                  const colors = {
+                    High: "#EA4335",   // gRed
+                    Medium: "#FBBC05", // gYellow
+                    Low: "#4285F4"     // gBlue
+                  };
+
+                  return (
+                    <CircleMarker
+                      key={ev.id}
+                      center={[ev.lat, ev.lon]}
+                      pathOptions={{
+                        fillColor: colors[ev.severity] || "#999",
+                        color: "#000",
+                        weight: 2,
+                        fillOpacity: 1
+                      }}
+                      radius={ev.severity === "High" ? 12 : ev.severity === "Medium" ? 10 : 8}
+                    >
+                      <Popup>
+                        <div style={{ fontFamily: "'Space Grotesk', sans-serif", padding: "4px" }}>
+                          <b style={{ color: colors[ev.severity], fontSize: "16px", textTransform: "uppercase" }}>{ev.type}</b><br />
+                          <div style={{ marginTop: "4px", fontSize: "14px", color: "#000", fontWeight: "500" }}>{ev.place}</div>
+                          <div style={{ marginTop: "2px", fontSize: "12px", color: "#666" }}>Severity: {ev.severity}</div>
+                        </div>
+                      </Popup>
+                    </CircleMarker>
+                  );
+                }
+                return null;
+              })}
+            </MarkerClusterGroup>
+          </MapContainer>
         </div>
 
         {/* Floating Stats Overlay */}
         <div className="absolute top-8 right-8 flex flex-col gap-3 z-[1000]">
+          {/* Audio Mute Toggle */}
+          <button
+            onClick={() => setIsMuted(!isMuted)}
+            className="bg-white border-2 border-neoBlack shadow-neo p-3 min-w-[140px] hover:translate-x-1 transition-transform flex items-center justify-between group cursor-pointer"
+            title={isMuted ? "Unmute Audio Alerts" : "Mute Audio Alerts"}
+          >
+            <span className="text-xs font-bold text-neoBlack uppercase">Audio Alerts</span>
+            {isMuted ? (
+              <svg className="w-6 h-6 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
+              </svg>
+            ) : (
+              <svg className="w-6 h-6 text-gRed animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+              </svg>
+            )}
+          </button>
+
           <div className="bg-white border-2 border-neoBlack shadow-neo p-3 min-w-[140px] hover:translate-x-1 transition-transform">
             <p className="text-xs font-bold text-gray-500 uppercase">Total Events</p>
             <p className="text-3xl font-black text-neoBlack">{stats.total}</p>

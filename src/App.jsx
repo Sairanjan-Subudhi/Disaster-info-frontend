@@ -11,6 +11,7 @@ import Docs from "./Components/Docs";
 import Contact from "./Components/Contact";
 import Privacy from "./Components/Privacy";
 import PrivateRoute from "./Components/PrivateRoute";
+import ManageUsers from "./Components/ManageUsers";
 
 function App() {
   return (
@@ -30,6 +31,7 @@ function App() {
           {/* Protected Routes */}
           <Route element={<PrivateRoute />}>
             <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/admin/users" element={<ManageUsers />} />
           </Route>
         </Routes>
       </div>

@@ -2,28 +2,25 @@ import React, { useEffect, useState, useRef } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import io from "socket.io-client";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
+import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from 'react-leaflet';
+import MarkerClusterGroup from 'react-leaflet-cluster';
 
 const SOCKET_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:4000";
 
 export default function Dashboard() {
   const [events, setEvents] = useState([]);
   const [filter, setFilter] = useState("all");
-  const mapRef = useRef(null);
-  const [isDark, setIsDark] = useState(document.documentElement.classList.contains('dark'));
   const [userRole, setUserRole] = useState('user');
+  const [isMuted, setIsMuted] = useState(false);
+  const isMutedRef = useRef(isMuted);
+  const [mapCenter, setMapCenter] = useState(null);
 
-  // Listen for theme changes to update map tiles
+  // Keep ref in sync with state for socket listener
   useEffect(() => {
-    const observer = new MutationObserver((mutations) => {
-      mutations.forEach((mutation) => {
-        if (mutation.attributeName === 'class') {
-          setIsDark(document.documentElement.classList.contains('dark'));
-        }
-      });
-    });
-    observer.observe(document.documentElement, { attributes: true });
-    return () => observer.disconnect();
-  }, []);
+    isMutedRef.current = isMuted;
+  }, [isMuted]);
 
   // Check user role on mount
   useEffect(() => {
@@ -47,6 +44,26 @@ export default function Dashboard() {
     lat: (ev.location && ev.location.coordinates) ? ev.location.coordinates[1] : null,
     lon: (ev.location && ev.location.coordinates) ? ev.location.coordinates[0] : null
   });
+
+  // Custom Cluster Icon - Cyber Style
+  const createClusterCustomIcon = function (cluster) {
+    return L.divIcon({
+      html: `<span class="flex items-center justify-center w-full h-full text-white font-bold text-lg drop-shadow-[0_0_5px_rgba(0,240,255,0.8)]">${cluster.getChildCount()}</span>`,
+      className: 'bg-cyber-black/90 border border-neon-blue rounded-full shadow-glow-blue backdrop-blur-sm',
+      iconSize: L.point(40, 40, true),
+    });
+  };
+
+  // Component to handle map animations
+  function MapController({ center }) {
+    const map = useMap();
+    useEffect(() => {
+      if (center) {
+        map.flyTo(center, 10, { duration: 2.5 });
+      }
+    }, [center, map]);
+    return null;
+  }
 
   useEffect(() => {
     const fetchAlerts = async () => {
@@ -73,103 +90,96 @@ export default function Dashboard() {
       const transformedEvent = transformEvent(evt);
       setEvents((prev) => [transformedEvent, ...prev]);
 
-      if (transformedEvent.lat && transformedEvent.lon && mapRef.current) {
-        mapRef.current.flyTo([transformedEvent.lat, transformedEvent.lon], 10, { duration: 2.5 });
+      if (transformedEvent.lat && transformedEvent.lon) {
+        setMapCenter([transformedEvent.lat, transformedEvent.lon]);
+      }
+
+      // Audio Alert for High Severity
+      if (transformedEvent.severity === 'High' && !isMutedRef.current) {
+        const text = `Alert. High severity ${transformedEvent.type} detected in ${transformedEvent.place}.`;
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.rate = 1.0;
+        utterance.pitch = 1.0;
+        window.speechSynthesis.speak(utterance);
       }
     });
 
     return () => socket.disconnect();
   }, []);
 
-  // Map Initialization & Tile Layer Update
-  useEffect(() => {
-    if (!events.length) return;
-    const mapContainer = document.getElementById("dashboard-map");
-    if (!mapContainer) return;
-
-    if (!mapRef.current) {
-      const map = L.map("dashboard-map", {
-        preferCanvas: true,
-        attributionControl: false,
-        zoomControl: false
-      }).setView([20.6, 78.9], 5);
-
-      L.control.zoom({ position: 'topright' }).addTo(map);
-      mapRef.current = map;
-      window._disasterMap = map;
-    }
-
-    const map = mapRef.current;
-
-    // Remove existing tile layers
-    map.eachLayer((layer) => {
-      if (layer instanceof L.TileLayer) {
-        map.removeLayer(layer);
-      }
-    });
-
-    // Add new tile layer based on theme
-    const tileUrl = isDark
-      ? "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-      : "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png";
-
-    L.tileLayer(tileUrl, {
-      attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
-      subdomains: 'abcd',
-      maxZoom: 19
-    }).addTo(map);
-
-  }, [events.length === 0, isDark]); // Re-run when theme changes
-
-  // Markers Update
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
-
-    if (window._dashMarkers) window._dashMarkers.forEach(m => m.remove());
-    window._dashMarkers = [];
-
-    const filteredEvents = filter === "all" ? events : events.filter(e => e.severity === filter);
-
-    filteredEvents.forEach(e => {
-      if (e.lat !== null && e.lon !== null) {
-        const colors = {
-          High: "#EA4335",   // gRed
-          Medium: "#FBBC05", // gYellow
-          Low: "#4285F4"     // gBlue
-        };
-
-        const marker = L.circleMarker([e.lat, e.lon], {
-          radius: e.severity === "High" ? 12 : e.severity === "Medium" ? 10 : 8,
-          fillColor: colors[e.severity] || "#999",
-          color: "#000",
-          weight: 2,
-          fillOpacity: 1
-        }).addTo(map);
-
-        marker.bindPopup(`
-          <div style="font-family: 'Space Grotesk', sans-serif; padding: 4px;">
-            <b style="color: ${colors[e.severity]}; font-size: 16px; text-transform: uppercase;">${e.type}</b><br/>
-            <div style="margin-top: 4px; font-size: 14px; color: #000; font-weight: 500;">${e.place}</div>
-            <div style="margin-top: 2px; font-size: 12px; color: #666;">Severity: ${e.severity}</div>
-          </div>
-        `);
-
-        window._dashMarkers.push(marker);
-      }
-    });
-  }, [events, filter]);
-
   const handleEventClick = (lat, lon) => {
-    if (lat && lon && mapRef.current) {
-      mapRef.current.flyTo([lat, lon], 10, { duration: 2.5 });
+    if (lat && lon) {
+      setMapCenter([lat, lon]);
     }
   };
 
-  const handleDeleteEvent = (e, id) => {
+  const handleDeleteEvent = async (e, id) => {
     e.stopPropagation(); // Prevent triggering the card click
-    console.log(`Deleting event ID: ${id}`);
-    // Future: Add API call to delete event
+
+    if (!window.confirm('Are you sure you want to delete this report?')) return;
+
+    try {
+      const token = localStorage.getItem('token');
+      console.log(`Attempting to delete event ${id} with token:`, token ? 'Present' : 'Missing');
+
+      const response = await fetch(`${SOCKET_URL}/api/alerts/${id}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      if (response.ok) {
+        // Optimistic UI update
+        setEvents(prev => prev.filter(event => event.id !== id));
+        console.log(`Deleted event ID: ${id}`);
+      } else {
+        const errorText = await response.text();
+        console.error('Failed to delete event:', response.status, errorText);
+        alert(`Failed to delete event. Server responded with: ${response.status} ${errorText}`);
+      }
+    } catch (error) {
+      console.error('Error deleting event:', error);
+      alert('Error deleting event. Please check your connection.');
+    }
+  };
+
+  const handleDownloadReport = () => {
+    const doc = new jsPDF();
+
+    // Title
+    doc.setFontSize(20);
+    doc.text("DisasterWatch Situation Report", 14, 22);
+
+    // Timestamp
+    doc.setFontSize(10);
+    doc.text(`Generated on: ${new Date().toLocaleString()}`, 14, 30);
+
+    // Table
+    const tableColumn = ["Type", "Location", "Severity", "Time"];
+    const tableRows = [];
+
+    events.forEach(event => {
+      const eventData = [
+        event.type,
+        event.place,
+        event.severity,
+        new Date(event.time).toLocaleString()
+      ];
+      tableRows.push(eventData);
+    });
+
+    autoTable(doc, {
+      head: [tableColumn],
+      body: tableRows,
+      startY: 40,
+      theme: 'grid',
+      styles: { fontSize: 8 },
+      headStyles: { fillColor: [0, 240, 255] } // Neon Blue
+    });
+
+    doc.save(`Situation_Report_${new Date().toISOString().split('T')[0]}.pdf`);
   };
 
   const filteredEvents = filter === "all" ? events : events.filter(e => e.severity === filter);
@@ -181,28 +191,91 @@ export default function Dashboard() {
     low: events.filter(e => e.severity === "Low").length
   };
 
-  if (!events.length) return (
-    <div className="min-h-screen bg-neoWhite dark:bg-neoDark flex flex-col items-center justify-center">
-      <div className="w-16 h-16 border-4 border-neoBlack border-t-gBlue rounded-full animate-spin mb-6"></div>
-      <p className="text-neoBlack dark:text-neoWhite font-bold text-xl animate-pulse">INITIALIZING SYSTEM...</p>
-    </div>
-  );
-
   return (
-    <div className="min-h-[calc(100vh-80px)] bg-neoWhite dark:bg-neoDark flex flex-col md:flex-row overflow-hidden relative">
-      {/* Sidebar - Neo-Brutalist */}
-      <aside className="w-full md:w-96 bg-white dark:bg-neoDark border-r-4 border-neoBlack dark:border-neoWhite flex flex-col z-20 shadow-neo lg:h-[calc(100vh-80px)]">
+    <div className="relative w-full h-screen overflow-hidden bg-cyber-black text-white">
+
+      {/* Map Background - Z-index 0 */}
+      <div className="absolute inset-0 z-0 h-screen w-full">
+        <MapContainer
+          center={[20.6, 78.9]}
+          zoom={5}
+          className="w-full h-full"
+          zoomControl={false}
+        >
+          <TileLayer
+            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
+            url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+          />
+          <MapController center={mapCenter} />
+
+          <MarkerClusterGroup
+            chunkedLoading
+            iconCreateFunction={createClusterCustomIcon}
+          >
+            {filteredEvents.map(ev => {
+              if (ev.lat !== null && ev.lon !== null) {
+                const colors = {
+                  High: "#FF003C",   // Neon Red
+                  Medium: "#BC13FE", // Neon Purple
+                  Low: "#00F0FF"     // Neon Blue
+                };
+
+                return (
+                  <CircleMarker
+                    key={ev.id}
+                    center={[ev.lat, ev.lon]}
+                    pathOptions={{
+                      fillColor: colors[ev.severity] || "#999",
+                      color: colors[ev.severity] || "#999",
+                      weight: 1,
+                      fillOpacity: 0.6,
+                      className: "animate-pulse"
+                    }}
+                    radius={ev.severity === "High" ? 12 : ev.severity === "Medium" ? 10 : 8}
+                  >
+                    <Popup className="glass-popup">
+                      <div className="p-2 font-sans">
+                        <b style={{ color: colors[ev.severity], fontSize: "16px", textTransform: "uppercase", textShadow: `0 0 10px ${colors[ev.severity]}` }}>{ev.type}</b><br />
+                        <div className="mt-1 text-sm font-bold text-gray-800">{ev.place}</div>
+                        <div className="text-xs text-gray-600">Severity: {ev.severity}</div>
+                      </div>
+                    </Popup>
+                  </CircleMarker>
+                );
+              }
+              return null;
+            })}
+          </MarkerClusterGroup>
+        </MapContainer>
+      </div>
+
+      {/* Sidebar (Left) - Floating Glass Panel */}
+      <aside className="absolute top-20 left-4 bottom-4 w-80 z-10 flex flex-col bg-cyber-black/80 backdrop-blur-xl border border-white/10 rounded-2xl overflow-hidden shadow-2xl transition-all duration-300">
+
         {/* Header */}
-        <div className="p-6 border-b-4 border-neoBlack dark:border-neoWhite bg-gYellow">
+        <div className="p-6 border-b border-white/10 bg-white/5">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-2xl font-black text-neoBlack flex items-center tracking-tight">
-              <span className="w-4 h-4 rounded-full bg-gRed border-2 border-neoBlack mr-3 animate-pulse"></span>
-              LIVE FEED
+            <h2 className="text-xs font-bold text-neon-blue tracking-widest uppercase flex items-center">
+              <span className="w-2 h-2 rounded-full bg-neon-red mr-2 animate-pulse shadow-[0_0_8px_rgba(255,0,60,0.8)]"></span>
+              Live Feed
             </h2>
-            <span className="text-sm font-bold text-neoBlack bg-white px-3 py-1 border-2 border-neoBlack shadow-neo-sm">
+            <span className="text-xs font-mono text-gray-400 bg-white/5 px-2 py-1 rounded border border-white/10">
               {filteredEvents.length} EVENTS
             </span>
           </div>
+
+          {/* Admin Download Report Button */}
+          {userRole === 'admin' && (
+            <button
+              onClick={handleDownloadReport}
+              className="w-full mb-4 py-2 px-4 text-xs font-bold text-neon-blue border border-neon-blue/30 bg-neon-blue/10 hover:bg-neon-blue/20 hover:shadow-glow-blue transition-all rounded uppercase tracking-wider flex items-center justify-center gap-2"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+              Download Report
+            </button>
+          )}
 
           {/* Filters */}
           <div className="flex flex-wrap gap-2">
@@ -210,9 +283,9 @@ export default function Dashboard() {
               <button
                 key={f}
                 onClick={() => setFilter(f)}
-                className={`px-3 py-1.5 text-sm font-bold uppercase border-2 border-neoBlack transition-all shadow-neo-sm active:translate-x-[2px] active:translate-y-[2px] active:shadow-none ${filter === f
-                    ? 'bg-neoBlack text-white'
-                    : 'bg-white text-neoBlack hover:bg-gray-100'
+                className={`px-3 py-1 text-[10px] font-bold uppercase tracking-wider border border-transparent transition-all rounded ${filter === f
+                  ? 'bg-neon-blue text-black shadow-glow-blue'
+                  : 'bg-white/5 text-gray-400 hover:bg-white/10 hover:text-white border-white/10'
                   }`}
               >
                 {f}
@@ -222,32 +295,29 @@ export default function Dashboard() {
         </div>
 
         {/* Event List */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar bg-neoWhite dark:bg-neoDark">
+        <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">
           {filteredEvents.map(ev => (
             <div
               key={ev.id}
               onClick={() => handleEventClick(ev.lat, ev.lon)}
-              className={`p-4 border-2 border-neoBlack shadow-neo hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-none transition-all cursor-pointer bg-white dark:bg-neoDark group relative ${ev.severity === 'High' ? 'border-l-8 border-l-gRed' :
-                  ev.severity === 'Medium' ? 'border-l-8 border-l-gYellow' :
-                    'border-l-8 border-l-gBlue'
+              className={`p-4 bg-white/5 border-l-2 border-transparent hover:bg-white/10 transition-all cursor-pointer rounded-r-lg group relative backdrop-blur-sm ${ev.severity === 'High' ? 'border-l-neon-red shadow-[inset_10px_0_20px_-10px_rgba(255,0,60,0.2)]' :
+                  ev.severity === 'Medium' ? 'border-l-neon-purple shadow-[inset_10px_0_20px_-10px_rgba(188,19,254,0.2)]' :
+                    'border-l-neon-blue shadow-[inset_10px_0_20px_-10px_rgba(0,240,255,0.2)]'
                 }`}
             >
-              <div className="flex justify-between items-start mb-2">
+              <div className="flex justify-between items-start mb-1">
                 <div className="flex items-center space-x-2">
-                  <span className={`font-black text-lg tracking-tight ${ev.severity === 'High' ? 'text-gRed' :
-                      ev.severity === 'Medium' ? 'text-gYellow' :
-                        'text-gBlue'
+                  <span className={`font-bold text-sm tracking-wide ${ev.severity === 'High' ? 'text-neon-red drop-shadow-[0_0_5px_rgba(255,0,60,0.5)]' :
+                      ev.severity === 'Medium' ? 'text-neon-purple drop-shadow-[0_0_5px_rgba(188,19,254,0.5)]' :
+                        'text-neon-blue drop-shadow-[0_0_5px_rgba(0,240,255,0.5)]'
                     }`}>{ev.type}</span>
                 </div>
                 <div className="flex items-center space-x-2">
-                  <span className="text-xs font-bold bg-neoBlack text-white px-2 py-1">
-                    {ev.severity.toUpperCase()}
-                  </span>
                   {/* Admin Delete Button */}
                   {userRole === 'admin' && (
                     <button
                       onClick={(e) => handleDeleteEvent(e, ev.id)}
-                      className="p-1 bg-white border-2 border-neoBlack hover:bg-gRed hover:text-white transition-colors shadow-neo-sm active:shadow-none active:translate-x-[1px] active:translate-y-[1px]"
+                      className="p-1 text-gray-500 hover:text-neon-red transition-colors"
                       title="Delete Event"
                     >
                       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -258,11 +328,11 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              <div className="text-sm text-neoBlack dark:text-neoWhite font-medium mb-2 flex items-center">
-                <span className="truncate">{ev.place}</span>
+              <div className="text-xs text-gray-300 font-medium mb-2 flex items-center">
+                <span className="truncate opacity-80">{ev.place}</span>
               </div>
 
-              <div className="text-xs font-mono text-gray-500 dark:text-gray-400">
+              <div className="text-[10px] font-mono text-gray-500 uppercase tracking-wider">
                 {new Date(ev.time).toLocaleString()}
               </div>
             </div>
@@ -270,53 +340,71 @@ export default function Dashboard() {
         </div>
       </aside>
 
-      {/* Main Map Area */}
-      <main className="flex-1 relative h-[50vh] md:h-auto p-4 bg-neoWhite dark:bg-neoDark">
-        <div className="w-full h-full border-4 border-neoBlack dark:border-neoWhite shadow-neo relative overflow-hidden bg-gray-200">
-          <div id="dashboard-map" className="w-full h-full z-0"></div>
-        </div>
+      {/* Stats Overlay (Top Right) */}
+      <div className="absolute top-24 right-8 flex flex-col gap-3 z-10 pointer-events-none">
+        <div className="pointer-events-auto flex flex-col gap-3">
+          {/* Audio Mute Toggle */}
+          <button
+            onClick={() => setIsMuted(!isMuted)}
+            className="bg-cyber-black/80 backdrop-blur-xl border border-white/10 rounded-lg p-3 min-w-[160px] hover:border-neon-blue/50 transition-all flex items-center justify-between group cursor-pointer shadow-lg"
+            title={isMuted ? "Unmute Audio Alerts" : "Mute Audio Alerts"}
+          >
+            <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Audio Feed</span>
+            {isMuted ? (
+              <svg className="w-5 h-5 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
+              </svg>
+            ) : (
+              <svg className="w-5 h-5 text-neon-green animate-pulse drop-shadow-[0_0_5px_rgba(5,255,0,0.8)]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+              </svg>
+            )}
+          </button>
 
-        {/* Floating Stats Overlay */}
-        <div className="absolute top-8 right-8 flex flex-col gap-3 z-[1000]">
-          <div className="bg-white border-2 border-neoBlack shadow-neo p-3 min-w-[140px] hover:translate-x-1 transition-transform">
-            <p className="text-xs font-bold text-gray-500 uppercase">Total Events</p>
-            <p className="text-3xl font-black text-neoBlack">{stats.total}</p>
+          <div className="bg-cyber-black/80 backdrop-blur-xl border border-white/10 rounded-lg p-4 min-w-[160px] shadow-lg">
+            <p className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1">Total Events</p>
+            <p className="text-3xl font-black text-white drop-shadow-[0_0_10px_rgba(255,255,255,0.3)]">{stats.total}</p>
           </div>
-          <div className="bg-white border-2 border-neoBlack shadow-neo p-3 min-w-[140px] hover:translate-x-1 transition-transform border-l-8 border-l-gRed">
-            <p className="text-xs font-bold text-gRed uppercase">High Severity</p>
-            <p className="text-3xl font-black text-neoBlack">{stats.high}</p>
+
+          <div className="bg-cyber-black/80 backdrop-blur-xl border border-white/10 border-l-4 border-l-neon-red rounded-lg p-4 min-w-[160px] shadow-lg">
+            <p className="text-[10px] font-bold text-neon-red uppercase tracking-widest mb-1">High Severity</p>
+            <p className="text-3xl font-black text-white drop-shadow-[0_0_10px_rgba(255,0,60,0.5)]">{stats.high}</p>
           </div>
-          <div className="bg-white border-2 border-neoBlack shadow-neo p-3 min-w-[140px] hover:translate-x-1 transition-transform border-l-8 border-l-gYellow">
-            <p className="text-xs font-bold text-gYellow uppercase">Medium Severity</p>
-            <p className="text-3xl font-black text-neoBlack">{stats.medium}</p>
+
+          <div className="bg-cyber-black/80 backdrop-blur-xl border border-white/10 border-l-4 border-l-neon-purple rounded-lg p-4 min-w-[160px] shadow-lg">
+            <p className="text-[10px] font-bold text-neon-purple uppercase tracking-widest mb-1">Medium Severity</p>
+            <p className="text-3xl font-black text-white drop-shadow-[0_0_10px_rgba(188,19,254,0.5)]">{stats.medium}</p>
           </div>
-          <div className="bg-white border-2 border-neoBlack shadow-neo p-3 min-w-[140px] hover:translate-x-1 transition-transform border-l-8 border-l-gBlue">
-            <p className="text-xs font-bold text-gBlue uppercase">Low Severity</p>
-            <p className="text-3xl font-black text-neoBlack">{stats.low}</p>
+
+          <div className="bg-cyber-black/80 backdrop-blur-xl border border-white/10 border-l-4 border-l-neon-blue rounded-lg p-4 min-w-[160px] shadow-lg">
+            <p className="text-[10px] font-bold text-neon-blue uppercase tracking-widest mb-1">Low Severity</p>
+            <p className="text-3xl font-black text-white drop-shadow-[0_0_10px_rgba(0,240,255,0.5)]">{stats.low}</p>
           </div>
         </div>
-      </main>
+      </div>
 
       {/* Global Styles for Scrollbar Hiding */}
       <style>{`
         .custom-scrollbar::-webkit-scrollbar {
-          width: 8px;
+          width: 4px;
         }
         .custom-scrollbar::-webkit-scrollbar-track {
-          background: #F0F0F0;
-          border-left: 2px solid #121212;
+          background: rgba(255, 255, 255, 0.05);
         }
         .custom-scrollbar::-webkit-scrollbar-thumb {
-          background: #121212;
-          border: 2px solid #F0F0F0;
+          background: rgba(0, 240, 255, 0.3);
+          border-radius: 2px;
         }
-        .dark .custom-scrollbar::-webkit-scrollbar-track {
-          background: #1E1E1E;
-          border-left: 2px solid #FFFFFF;
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+          background: rgba(0, 240, 255, 0.6);
         }
-        .dark .custom-scrollbar::-webkit-scrollbar-thumb {
-          background: #FFFFFF;
-          border: 2px solid #1E1E1E;
+        .leaflet-popup-content-wrapper {
+          background: rgba(255, 255, 255, 0.9) !important;
+          backdrop-filter: blur(4px);
+        }
+        .leaflet-popup-tip {
+          background: rgba(255, 255, 255, 0.9) !important;
         }
       `}</style>
     </div>
